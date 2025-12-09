@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  mcp_bitrix24:
+    build:
+      context: ./mcp_bitrix24
+    ports:
+      - "8001:8000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./mcp_bitrix24/src:/app/src 
+    dns:
+      - 8.8.8.8
+    command: ["uv", "run", "python", "src/main.py"]
+
+  mcp_call_processor:
+    build:
+      context: ./mcp_call_processor
+    ports:
+      - "8002:8000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./mcp_call_processor:/app/src
+    command: ["uv", "run", "python", "src/main.py"]
+
+  mcp_checklist_manager:
+    build:
+      context: ./mcp_checklist_manager
+    ports:
+      - "8003:8000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./mcp_checklist_manager:/app/src
+    command: ["uv", "run", "python", "src/main.py"]

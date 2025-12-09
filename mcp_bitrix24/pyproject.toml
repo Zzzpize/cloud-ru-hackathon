@@ -1,0 +1,13 @@
+[project]
+name = "mcp_bitrix24"
+version = "0.1.0"
+dependencies = [
+    "fastmcp", 
+    "pydantic",
+    "httpx",
+    "python-dotenv",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
+    "prometheus-client",
+    "fast-bitrix24"
+]
