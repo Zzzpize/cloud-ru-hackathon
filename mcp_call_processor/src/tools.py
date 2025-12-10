@@ -202,7 +202,7 @@ async def _get_sber_token(ctx: Optional[Context]) -> str:
             "RqUID": str(uuid.uuid4()),
             "Content-Type": "application/x-www-form-urlencoded",
         }
-        data = {"scope": "SPEECH_RECOGNIZER"}
+        data = {"scope": "SALUTE_SPEECH_PERS"}
         oauth_url = os.getenv("SBER_OAUTH_URL", DEFAULT_OAUTH_URL)
         verify_ssl = _parse_bool_env("SBER_VERIFY_SSL", "true")
 
