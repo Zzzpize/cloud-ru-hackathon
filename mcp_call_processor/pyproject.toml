@@ -1,0 +1,15 @@
+[project]
+name = "mcp_call_processor"
+version = "0.1.0"
+description = "Sber STT MCP Server"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp",
+    "pydantic",
+    "httpx",
+    "aiofiles",
+    "python-dotenv",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
+    "prometheus-client"
+]

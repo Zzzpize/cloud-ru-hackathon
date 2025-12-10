@@ -30,7 +30,7 @@ from mcp_instance import mcp
 from mcp.shared.exceptions import McpError, ErrorData
 from prometheus_client import Counter, Histogram
 
-from .utils import ToolResult, _require_env_vars
+from utils import ToolResult, _require_env_vars
 
 load_dotenv(find_dotenv())
 
