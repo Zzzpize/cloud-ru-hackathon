@@ -134,7 +134,8 @@ async def _ensure_wav(input_path: str, ctx: Optional[Context]) -> str:
         await _ctx_safe_debug(ctx, "Input already WAV — skipping conversion")
         return input_path
 
-    await _ctx_safe_info(ctx, "Converting audio to WAV (16kHz mono) via ffmpeg")
+    # ИСПРАВЛЕНО: Добавлено явное указание кодека в лог
+    await _ctx_safe_info(ctx, "Converting audio to WAV (16kHz mono, PCM_S16LE) via ffmpeg")
     fd, output_path = tempfile.mkstemp(suffix=".wav")
     os.close(fd)
 
@@ -143,10 +144,14 @@ async def _ensure_wav(input_path: str, ctx: Optional[Context]) -> str:
         "-y",
         "-i",
         input_path,
+        "-acodec",         # <-- ИСПРАВЛЕНИЕ: Указываем кодек
+        "pcm_s16le",       # <-- ИСПРАВЛЕНИЕ: Кодек Sber по умолчанию
         "-ac",
         "1",
         "-ar",
         "16000",
+        "-f",              # <-- ИСПРАВЛЕНИЕ: Указываем формат
+        "wav",
         output_path,
     ]
 
@@ -268,12 +273,24 @@ async def _upload_file_to_salute(token: str, wav_path: str, ctx: Optional[Contex
                 body = resp.text[:1000]
                 await _ctx_safe_error(ctx, f"Upload HTTP error {e.response.status_code}: {body}")
                 raise McpError(ErrorData(code=-32050, message=f"Upload failed: {e.response.status_code}"))
+            
             js = resp.json()
-            # docs: returns an identifier for the uploaded file (field name may be 'file_id' or 'id')
-            file_id = js.get("file_id") or js.get("id") or js.get("result", {}).get("file_id")
+            
+            # --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
+            # Логика извлечения ID файла обновлена под ответ {'result': {'request_file_id': '...'}}
+            result_obj = js.get("result", {})
+            file_id = (
+                js.get("file_id") or 
+                js.get("id") or 
+                result_obj.get("file_id") or 
+                result_obj.get("request_file_id")  # <--- Добавлено это поле
+            )
+            # -----------------------
+
             if not file_id:
                 await _ctx_safe_error(ctx, f"Upload response missing file id: {js}")
                 raise McpError(ErrorData(code=-32051, message="Upload did not return file id"))
+            
             await _ctx_safe_debug(ctx, f"Uploaded file id: {file_id}")
             return file_id
     except McpError:
@@ -286,32 +303,47 @@ async def _upload_file_to_salute(token: str, wav_path: str, ctx: Optional[Contex
 async def _create_recognition_task(token: str, file_id: str, ctx: Optional[Context], enable_speaker_separation: bool = True, expected_speakers: int = 2, timeout: float = 30.0) -> str:
     """
     Create async recognition task. Returns task_id (string).
-    Payload includes speaker_separation_options per docs.
-    See docs: async-general and POST create task. (speaker_separation_options enable -> diarization).
+    Payload now fully corresponds to the official Sber SaluteSpeech Async API contract.
     """
     base = os.getenv("SBER_SALUTESPEECH_BASE_URL", DEFAULT_SALUTESPEECH_BASE)
     create_path = os.getenv("SBER_CREATE_TASK_PATH", DEFAULT_CREATE_TASK_PATH)
     url = base.rstrip("/") + create_path
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    
     payload: Dict[str, Any] = {
-        "file_id": file_id,
-        "language": os.getenv("SBER_RECOGNITION_LANGUAGE", "ru-RU"),
-        "config": {
+        "request_file_id": file_id,
+        "options": {
+            # Обязательные поля
+            "model": os.getenv("SBER_RECOGNITION_MODEL", "general"),
+            "audio_encoding": os.getenv("SBER_AUDIO_ENCODING", "PCM_S16LE"),
+            "sample_rate": int(os.getenv("SBER_SAMPLE_RATE", "16000")), # int, не float
+            
+            # Поля из предыдущих итераций
+            "language": os.getenv("SBER_RECOGNITION_LANGUAGE", "ru-RU"),
             "hypotheses_count": int(os.getenv("SBER_HYPOTHESES_COUNT", "1")),
             "normalization_options": {
                 "enable": True,
                 "punctuation": True,
                 "capitalization": True
             },
+            
+            "enable_profanity_filter": _parse_bool_env("SBER_PROFANITY_FILTER", "false"),
+
+            # ИСПРАВЛЕНО: Добавление 's' к таймаутам
+            "no_speech_timeout": str(os.getenv("SBER_NO_SPEECH_TIMEOUT", "2")) + "s",
+            "max_speech_timeout": str(os.getenv("SBER_MAX_SPEECH_TIMEOUT", "2")) + "s",
+            
+            "channels_count": int(os.getenv("SBER_CHANNELS_COUNT", "1")),
         },
     }
-    # add speaker separation options if requested
-    if enable_speaker_separation:
-        payload["config"]["speaker_separation_options"] = {
-            "enable": True,
-            "count": int(os.getenv("SBER_SPEAKER_COUNT", str(expected_speakers))),
-            "enable_only_main_speaker": False
-        }
+    
+    # Настройки диаризации
+    speaker_separation_options = {
+        "enable": enable_speaker_separation,
+        "count": int(os.getenv("SBER_SPEAKER_COUNT", str(expected_speakers))),
+        "enable_only_main_speaker": False 
+    }
+    payload["options"]["speaker_separation_options"] = speaker_separation_options
 
     await _ctx_safe_debug(ctx, f"Creating recognition task at {url} payload keys: {list(payload.keys())}")
     verify_ssl = _parse_bool_env("SBER_VERIFY_SSL", "true")
@@ -326,7 +358,15 @@ async def _create_recognition_task(token: str, file_id: str, ctx: Optional[Conte
                 await _ctx_safe_error(ctx, f"Create task HTTP error {e.response.status_code}: {body}")
                 raise McpError(ErrorData(code=-32060, message=f"Create task failed: {e.response.status_code}"))
             js = resp.json()
-            task_id = js.get("task_id") or js.get("id") or js.get("result", {}).get("task_id")
+            result_obj = js.get("result", {})
+            task_id = (
+                js.get("task_id") or 
+                js.get("id") or 
+                result_obj.get("task_id") or 
+                result_obj.get("id") # <-- Добавлено это поле!
+            )
+            # -----------------------
+
             if not task_id:
                 await _ctx_safe_error(ctx, f"Create task response missing task id: {js}")
                 raise McpError(ErrorData(code=-32061, message="Create task did not return task id"))
@@ -339,76 +379,119 @@ async def _create_recognition_task(token: str, file_id: str, ctx: Optional[Conte
         raise McpError(ErrorData(code=-32062, message=f"Error creating task: {e}"))
 
 
-async def _poll_task_until_done(token: str, task_id: str, ctx: Optional[Context], poll_interval: float = 2.0, timeout: float = 300.0) -> Dict[str, Any]:
+async def _poll_task_until_done(token: str, task_id: str, ctx: Optional[Context], max_poll_time: int = 120, poll_interval: int = 5) -> Dict[str, Any]:
     """
-    Poll the task status until finished. Returns final task JSON (which should include link to result or result in body).
+    Опрашивает статус задачи, пока она не завершится (DONE/FAILED).
+    Возвращает полный JSON-результат от task:get, который содержит транскрипцию.
     """
-    base = os.getenv("SBER_SALUTESPEECH_BASE_URL", DEFAULT_SALUTESPEECH_BASE)
-    status_path_template = os.getenv("SBER_TASK_STATUS_PATH", DEFAULT_TASK_STATUS_PATH)
-    url = base.rstrip("/") + status_path_template.format(task_id=task_id)
+    base = os.getenv("SBER_SALUTESPEECH_BASE_URL", "https://smartspeech.sber.ru/rest/v1")
+    status_path = os.getenv("SBER_TASK_STATUS_PATH", "/task:get")
+    url = base.rstrip("/") + status_path
+    
     headers = {"Authorization": f"Bearer {token}"}
     verify_ssl = _parse_bool_env("SBER_VERIFY_SSL", "true")
-    started = time.time()
-    await _ctx_safe_debug(ctx, f"Polling task status at {url}")
-    try:
-        async with httpx.AsyncClient(timeout=30.0, verify=verify_ssl) as client:
-            while True:
-                resp = await client.get(url, headers=headers)
-                try:
-                    resp.raise_for_status()
-                except httpx.HTTPStatusError as e:
-                    body = resp.text[:1000]
-                    await _ctx_safe_error(ctx, f"Task status HTTP error {e.response.status_code}: {body}")
-                    raise McpError(ErrorData(code=-32070, message=f"Task status failed: {e.response.status_code}"))
+    
+    start_time = time.time()
+    params = {"id": task_id} # ID передается как query-параметр
+
+    async with httpx.AsyncClient(timeout=10, verify=verify_ssl) as client:
+        while time.time() - start_time < max_poll_time:
+            await _ctx_safe_debug(ctx, f"Polling task status at {url} with ID={task_id}")
+            
+            try:
+                resp = await client.get(url, headers=headers, params=params)
+                resp.raise_for_status()
                 js = resp.json()
-                # docs: status field may be 'pending', 'running', 'completed', 'failed'
-                status = js.get("status") or js.get("state") or ""
-                await _ctx_safe_debug(ctx, f"Task {task_id} status: {status}")
-                if status.lower() in ("completed", "done", "finished"):
-                    return js
-                if status.lower() in ("failed", "error"):
-                    await _ctx_safe_error(ctx, f"Task {task_id} failed: {js}")
-                    raise McpError(ErrorData(code=-32071, message="Recognition task failed"))
-                if time.time() - started > timeout:
-                    await _ctx_safe_error(ctx, f"Task {task_id} polling timeout after {timeout}s")
-                    raise McpError(ErrorData(code=-32072, message="Recognition task timeout"))
-                await asyncio.sleep(poll_interval)
-    except McpError:
-        raise
-    except Exception as e:
-        await _ctx_safe_error(ctx, f"Error polling task status: {e}")
-        raise McpError(ErrorData(code=-32073, message=f"Error polling task: {e}"))
+            except httpx.HTTPStatusError as e:
+                body = resp.text[:1000]
+                await _ctx_safe_error(ctx, f"Task status HTTP error {e.response.status_code}: {body}")
+                raise McpError(ErrorData(code=-32063, message=f"Task status failed: {e.response.status_code}"))
+            except Exception as e:
+                await _ctx_safe_error(ctx, f"Error during polling task status: {e}")
+                time.sleep(poll_interval) # Уменьшаем интервал перед повтором при ошибке сети
+                continue
+            else:
+                # ИСПРАВЛЕНО: Приоритет отдается статусу распознавания внутри 'result'.
+                # Это должно быть 'NEW', 'IN_PROGRESS', 'DONE', 'FAILED'.
+                task_status = js.get("result", {}).get("status")
+
+                if not task_status:
+                    # Если статус отсутствует, логируем полную ошибку, но продолжаем поллинг
+                    await _ctx_safe_warning(ctx, f"Task status response missing recognition status field. Full response: {js}")
+                    
+                elif task_status == "DONE":
+                    await _ctx_safe_info(ctx, f"Recognition task {task_id} completed successfully.")
+                    # Весь JSON-ответ содержит транскрипцию, возвращаем его
+                    return js 
+                
+                elif task_status == "FAILED":
+                    await _ctx_safe_error(ctx, f"Recognition task {task_id} failed. Full response: {js}")
+                    # Пытаемся получить причину ошибки
+                    error_details = js.get("error", {}).get("message") or js.get("result", {}).get("error_message", "Unknown reason")
+                    raise McpError(ErrorData(code=-32064, message=f"Recognition failed for task {task_id}. Reason: {error_details}"))
+                
+                # Логируем фактический статус распознавания (NEW, IN_PROGRESS)
+                await _ctx_safe_debug(ctx, f"Task {task_id} status: {task_status}")
+            
+            time.sleep(poll_interval)
+
+    # Таймаут поллинга
+    raise McpError(ErrorData(code=-32065, message=f"Recognition task {task_id} timed out after {max_poll_time} seconds."))
 
 
 async def _download_task_result(token: str, task_json: Dict[str, Any], ctx: Optional[Context], timeout: float = 120.0) -> Dict[str, Any]:
     """
-    Obtain final result JSON. The status response may already contain result or a download URL.
-    Handles both possibilities.
+    Получает конечный JSON-результат.
+    1. Ищет результат в ответе task:get (result).
+    2. Если не находит, скачивает его через data:download (GET с query-параметром).
     """
-    # If result included directly
+    
+    # 1. Проверяем, не включен ли результат в ответ от task:get
     if "result" in task_json and task_json["result"]:
-        return task_json["result"]
+        result_data = task_json["result"]
+        
+        # Упрощаем: если result_data существует, мы его возвращаем, 
+        # как показал предыдущий лог ("returning result itself").
+        await _ctx_safe_debug(ctx, "Result found in task_json['result'], returning result object.")
+        return result_data 
 
-    # otherwise, try to download via result path
+    # 2. Если результат не был возвращен в task:get (Шаг 1), пытаемся скачать через /data:download
+    
     base = os.getenv("SBER_SALUTESPEECH_BASE_URL", DEFAULT_SALUTESPEECH_BASE)
-    result_path_template = os.getenv("SBER_TASK_RESULT_PATH", DEFAULT_TASK_RESULT_PATH)
+    
+    # Путь для скачивания (используется GET с query-параметрами)
+    # Используем переменную окружения, но по умолчанию она должна быть /data:download, 
+    # а не /tasks/{task_id}/result, как указано в старых значениях по умолчанию. 
+    # **ПРИМЕЧАНИЕ:** Для Sber API это часто /data:download?id={task_id}.
+    result_path = os.getenv("SBER_TASK_RESULT_PATH", "/data:download") 
+    
     task_id = task_json.get("task_id") or task_json.get("id")
     if not task_id:
         raise McpError(ErrorData(code=-32080, message="Task JSON missing id for result download"))
-    url = base.rstrip("/") + result_path_template.format(task_id=task_id)
+        
+    url = base.rstrip("/") + result_path
+    
+    # Для GET-запроса нужен только заголовок авторизации и query-параметры
     headers = {"Authorization": f"Bearer {token}"}
+    params = {"id": task_id} # ID передается как query-параметр
+    
     verify_ssl = _parse_bool_env("SBER_VERIFY_SSL", "true")
-    await _ctx_safe_debug(ctx, f"Downloading result from {url}")
+    await _ctx_safe_debug(ctx, f"Downloading result from {url} with task_id: {task_id}")
+    
     try:
         async with httpx.AsyncClient(timeout=timeout, verify=verify_ssl) as client:
-            resp = await client.get(url, headers=headers)
+            resp = await client.get(url, headers=headers, params=params)
+            
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as e:
                 body = resp.text[:1000]
                 await _ctx_safe_error(ctx, f"Result download HTTP error {e.response.status_code}: {body}")
                 raise McpError(ErrorData(code=-32081, message=f"Result download failed: {e.response.status_code}"))
+                
+            # Здесь resp.json() должен вернуть JSON с транскрипцией
             return resp.json()
+            
     except McpError:
         raise
     except Exception as e:
