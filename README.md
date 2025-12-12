@@ -55,7 +55,7 @@
 
 ## 🛠 Техническая Архитектура
 
-```mermaid
+```
 graph TD
     User((Пользователь)) -->|Telegram| Bot[Telegram Bot Interface]
     Bot -->|API Request| Agent[AI Agent (Cloud.ru Platform)]
