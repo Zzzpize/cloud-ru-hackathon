@@ -65,13 +65,33 @@ _ENV_VARS = [
     "SBER_OAUTH_CLIENT_SECRET",
 ]
 
-# Defaults (can be overridden via .env)
-DEFAULT_OAUTH_URL = os.getenv("SBER_OAUTH_URL", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth")
-DEFAULT_SALUTESPEECH_BASE = os.getenv("SBER_SALUTESPEECH_BASE_URL", "https://smartspeech.sber.ru/rest/v1")
-DEFAULT_UPLOAD_PATH = os.getenv("SBER_UPLOAD_PATH", "/data:upload")
-DEFAULT_CREATE_TASK_PATH = os.getenv("SBER_CREATE_TASK_PATH", "/speech:async_recognize")
-DEFAULT_TASK_STATUS_PATH = os.getenv("SBER_TASK_STATUS_PATH", "/task:get")
-DEFAULT_DATA_DOWNLOAD_PATH = os.getenv("SBER_TASK_RESULT_PATH", "/data:download")
+# -----------------------------
+# Hardcoded Sber API constants
+# -----------------------------
+
+SBER_OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+SBER_OAUTH_SCOPE = "SALUTE_SPEECH_PERS"
+#use the scope from sber studio
+
+SBER_SALUTESPEECH_BASE_URL = "https://smartspeech.sber.ru/rest/v1"
+SBER_UPLOAD_PATH = "/data:upload"
+SBER_CREATE_TASK_PATH = "/speech:async_recognize"
+SBER_TASK_STATUS_PATH = "/task:get"
+SBER_TASK_RESULT_PATH = "/data:download"
+
+SBER_SPEAKER_COUNT = 2
+SBER_HYPOTHESES_COUNT = 1
+SBER_RECOGNITION_LANGUAGE = "ru-RU"
+SBER_VERIFY_SSL = False
+
+SBER_RECOGNITION_MODEL = "general"
+SBER_AUDIO_ENCODING = "PCM_S16LE"
+SBER_SAMPLE_RATE = 16000
+SBER_CHANNELS_COUNT = 1
+SBER_PROFANITY_FILTER = False
+
+SBER_NO_SPEECH_TIMEOUT = 2     # seconds
+SBER_MAX_SPEECH_TIMEOUT = 2
 
 # Token cache + lock
 _token_lock: asyncio.Lock = asyncio.Lock()
@@ -229,9 +249,9 @@ async def _get_sber_token(ctx: Optional[Context]) -> str:
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
         }
-        data = {"scope": os.getenv("SBER_OAUTH_SCOPE", "SPEECH_RECOGNIZER")}
-        oauth_url = os.getenv("SBER_OAUTH_URL", DEFAULT_OAUTH_URL)
-        verify_ssl = _parse_bool_env("SBER_VERIFY_SSL", "true")
+        data = {"scope": SBER_OAUTH_SCOPE}
+        oauth_url = SBER_OAUTH_URL
+        verify_ssl = SBER_VERIFY_SSL
 
         try:
             async with httpx.AsyncClient(timeout=30.0, verify=verify_ssl) as client:
@@ -266,12 +286,12 @@ async def _upload_file_to_salute(token: str, wav_path: str, ctx: Optional[Contex
     """
     Upload file body to /data:upload -> returns request_file_id (or file_id)
     """
-    base = os.getenv("SBER_SALUTESPEECH_BASE_URL", DEFAULT_SALUTESPEECH_BASE)
-    upload_path = os.getenv("SBER_UPLOAD_PATH", DEFAULT_UPLOAD_PATH)
+    base = SBER_SALUTESPEECH_BASE_URL
+    upload_path = SBER_UPLOAD_PATH
     url = base.rstrip("/") + upload_path
     headers = {"Authorization": f"Bearer {token}"}
     await _ctx_debug(ctx, f"Uploading file to SaluteSpeech: {url}")
-    verify_ssl = _parse_bool_env("SBER_VERIFY_SSL", "true")
+    verify_ssl = SBER_VERIFY_SSL
 
     try:
         async with httpx.AsyncClient(timeout=timeout, verify=verify_ssl) as client:
@@ -312,29 +332,28 @@ async def _create_recognition_task(
     Create async recognition task and return task id.
     Payload follows SaluteSpeech async API contract (options + speaker_separation_options).
     """
-    base = os.getenv("SBER_SALUTESPEECH_BASE_URL", DEFAULT_SALUTESPEECH_BASE)
-    create_path = os.getenv("SBER_CREATE_TASK_PATH", DEFAULT_CREATE_TASK_PATH)
+    base = SBER_SALUTESPEECH_BASE_URL
+    create_path = SBER_CREATE_TASK_PATH
     url = base.rstrip("/") + create_path
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload: Dict[str, Any] = {
         "request_file_id": request_file_id,
         "options": {
-            "model": os.getenv("SBER_RECOGNITION_MODEL", "general"),
-            "audio_encoding": os.getenv("SBER_AUDIO_ENCODING", "PCM_S16LE"),
-            "sample_rate": int(os.getenv("SBER_SAMPLE_RATE", "16000")),
-            "language": os.getenv("SBER_RECOGNITION_LANGUAGE", "ru-RU"),
-            "hypotheses_count": int(os.getenv("SBER_HYPOTHESES_COUNT", "1")),
-            "normalization_options": {"enable": True, "punctuation": True, "capitalization": True},
-            "enable_profanity_filter": _parse_bool_env("SBER_PROFANITY_FILTER", "false"),
-            "no_speech_timeout": str(os.getenv("SBER_NO_SPEECH_TIMEOUT", "2")) + "s",
-            "max_speech_timeout": str(os.getenv("SBER_MAX_SPEECH_TIMEOUT", "2")) + "s",
-            "channels_count": int(os.getenv("SBER_CHANNELS_COUNT", "1")),
+            "model": SBER_RECOGNITION_MODEL,
+            "audio_encoding": SBER_AUDIO_ENCODING,
+            "sample_rate": SBER_SAMPLE_RATE,
+            "language": SBER_RECOGNITION_LANGUAGE,
+            "hypotheses_count": SBER_HYPOTHESES_COUNT,
+            "enable_profanity_filter": SBER_PROFANITY_FILTER,
+            "no_speech_timeout": f"{SBER_NO_SPEECH_TIMEOUT}s",
+            "max_speech_timeout": f"{SBER_MAX_SPEECH_TIMEOUT}s",
+            "channels_count": SBER_CHANNELS_COUNT,
         },
     }
     if enable_speaker_separation:
         payload["options"]["speaker_separation_options"] = {
             "enable": True,
-            "count": int(os.getenv("SBER_SPEAKER_COUNT", str(expected_speakers))),
+            "count": SBER_SPEAKER_COUNT,
             "enable_only_main_speaker": False,
         }
 
@@ -376,11 +395,11 @@ async def _poll_task_until_done(
     Poll task:get until status DONE. Returns dict containing at least:
       {"task_id": ..., "response_file_id": "..."} — response_file_id here will be filled from uploaded file_id by caller.
     """
-    base = os.getenv("SBER_SALUTESPEECH_BASE_URL", DEFAULT_SALUTESPEECH_BASE)
-    status_path = os.getenv("SBER_TASK_STATUS_PATH", DEFAULT_TASK_STATUS_PATH)
+    base = SBER_SALUTESPEECH_BASE_URL
+    status_path = SBER_TASK_STATUS_PATH
     url = base.rstrip("/") + status_path
     headers = {"Authorization": f"Bearer {token}"}
-    verify_ssl = _parse_bool_env("SBER_VERIFY_SSL", "true")
+    verify_ssl = SBER_VERIFY_SSL
     start_time = time.time()
     params = {"id": task_id}
 
@@ -434,12 +453,12 @@ async def _download_task_result(
     Returns parsed JSON dict (the SaluteSpeech result).
     """
 
-    base = os.getenv("SBER_SALUTESPEECH_BASE_URL", DEFAULT_SALUTESPEECH_BASE)
-    download_path = os.getenv("SBER_TASK_RESULT_PATH", DEFAULT_DATA_DOWNLOAD_PATH)
+    base = SBER_SALUTESPEECH_BASE_URL
+    download_path = SBER_TASK_RESULT_PATH
     url = base.rstrip("/") + download_path
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/octet-stream"}
     params = {"response_file_id": response_file_id}
-    verify_ssl = _parse_bool_env("SBER_VERIFY_SSL", "true")
+    verify_ssl = SBER_VERIFY_SSL
 
     await _ctx_debug(ctx, f"Downloading result file for response_file_id={response_file_id} from {url}")
 
