@@ -27,3 +27,19 @@ services:
     dns:
       - 8.8.8.8
     command: ["uv", "run", "python", "src/main.py"]
+
+
+  mcp_checklist_manager:
+    build:
+      context: ./mcp_checklist_manager
+    ports:
+      - "8003:8000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./mcp_checklist_manager/src:/app/src
+
+      - ./mcp_checklist_manager/checklists_db.json:/app/checklists_db.json
+    dns:
+      - 8.8.8.8
+    command: ["uv", "run", "python", "src/main.py"]
