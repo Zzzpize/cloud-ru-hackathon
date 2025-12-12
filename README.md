@@ -79,7 +79,7 @@ graph TD
 
 1.  Клонируйте репозиторий:
     ```bash
-    git clone https://github.com/your-repo/ai-call-quality-analyst.git
+    git clone https://github.com/Zzzpize/cloud-ru-hackathon
     ```
 2.  Создайте файл `.env` в корне (на основе `.env.example`).
 3.  Запустите стек:
